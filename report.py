@@ -35,7 +35,42 @@ def main(argv):
         logging.getLogger('__main__').setLevel(logging.DEBUG)
         logging.getLogger('UserReport').setLevel(logging.DEBUG)
 
-    reports = get_reports()
+    reports = list()
+
+    if args.aws_credentials:
+        for name, access_key_id, secret_access_key in args.aws_credentials:
+            ur = UserReport(name, access_key_id, secret_access_key)
+            reports.append(ur.report())
+    else:
+        ur = UserReport('AWS Account')
+        reports.append(ur.report())
+
+    if args.use_organizations:
+        sts_client = boto3.client('sts')
+        accounts = get_organizations()
+        get_config(accounts)
+        for num, acc in enumerate(accounts):
+            if num > 0:
+                if acc["Status"] == "ACTIVE":
+                    session = boto3.Session(profile_name=acc['Name'])
+                    sts = session.client('sts')
+                    try:
+                        assumed_role_object = sts.assume_role(
+                            RoleArn="arn:aws:iam::" + acc['Id'] + ":role/OrganizationAccountAccessRole",
+                            RoleSessionName="OrganizationAccountAccessRole",
+                            ExternalId=sts.get_caller_identity()['Account'],
+                            DurationSeconds=3600
+                        )
+
+                        ur = UserReport(access_key_id=assumed_role_object['Credentials']['AccessKeyId'],
+                                        secret_access_key=assumed_role_object['Credentials']['SecretAccessKey'],
+                                        session_token=assumed_role_object['Credentials']['SessionToken'],
+                                        name=acc['Name'])
+                        reports.append(ur.report())
+
+                    except botocore.exceptions.ClientError as error:
+                        log.warning(error.response)
+
     report_html = html_report(reports)
 
     if args.smtp_to:
@@ -51,8 +86,8 @@ def main(argv):
             log.debug('Printing HTML report to STDOUT')
             print(report_html)
 
-
 def add_args(p):
+    p.add_argument('--use-organizations', '-o' , help='Include AWS sub-accounts', dest='use_organizations', default=True)
     p.add_argument('--aws-credentials', '-c',
                    help='AWS Credentials as: SOME_REPORT_NAME,ACCESS_KEY_ID,SECRET_ACCESS_KEY', dest='aws_credentials',
                    nargs='+', type=aws_credentials)
@@ -77,6 +112,28 @@ def add_args(p):
                    dest='alert_days', type=int, default=365)
     return p
 
+def get_config(accounts):
+    config_aws_cli = "./configAwsCli"
+    config_aws_switch_plugin = "./configAwsSwitchPlugin"
+
+    writefile_config_aws_cli = open(config_aws_cli, mode='w', encoding="utf_8")
+    writefile_config_aws_switch_plugin = open(config_aws_switch_plugin, mode='w', encoding="utf_8")
+
+    for num, acc in enumerate(accounts):
+        if acc["Status"] == "ACTIVE":
+            if num > 0:
+                wcac_line = "[profile {}]\nsource_profile = ncroot\nrole_arn = arn:aws:iam::{}:role/OrganizationAccountAccessRole\n\n".format(acc['Name'], acc['Id'])
+                wcasp_line = "[{}]\naws_account_id = {}\nrole_name = OrganizationAccountAccessRole\n\n".format(acc['Name'], acc['Id'])
+                writefile_config_aws_cli.writelines(
+                    wcac_line
+                )
+                writefile_config_aws_switch_plugin.writelines(
+                    wcasp_line
+                )
+    writefile_config_aws_cli.close()
+    writefile_config_aws_switch_plugin.close()
+    log.info("ConfigAwsCli was created: " + config_aws_cli)
+    log.info("ConfigAwsSwitchPlugin was created: " + config_aws_switch_plugin)
 
 def email_report(args, report_html,
                  report_plain='Unsupported Client. Please view with an Email Client that supports HTML.'):
@@ -102,19 +159,6 @@ def email_report(args, report_html,
     log.info('Sent Email to {}'.format(', '.join(args.smtp_to)))
     s.quit()
 
-
-def get_reports():
-    reports = list()
-    if args.aws_credentials:
-        for name, access_key_id, secret_access_key in args.aws_credentials:
-            ur = UserReport(name, access_key_id, secret_access_key)
-            reports.append(ur.report())
-    else:
-        ur = UserReport('AWS Account')
-        reports.append(ur.report())
-    return reports
-
-
 def html_report(reports):
     page_template = """<!doctype html>
     <html lang="en">
@@ -137,6 +181,11 @@ def html_report(reports):
     log.debug('Assembling final HTML report')
     return html.render(body='<br/><br/><br/>'.join(html_reports), header=args.report_header, footer=args.report_footer)
 
+def get_organizations():
+    client = boto3.client('organizations')
+    response = client.list_accounts()
+    accounts = response.get('Accounts')
+    return accounts
 
 def aws_credentials(credentials):
     try:
@@ -343,17 +392,23 @@ def remap(x, in_min, in_max, out_min, out_max, min_max_cutoff=True):
 
 
 class UserReport:
-    def __init__(self, name, access_key_id=None, secret_access_key=None):
+    def __init__(self, name, access_key_id=None, secret_access_key=None, session_token=None):
         self.name = name
         self._access_key_id = access_key_id
         self._secret_access_key = secret_access_key
+        self._session_token = session_token
         self.log = logging.getLogger(__name__)
 
     def report(self):
         self.log.info('Generating Report "{}"'.format(self.name))
-        session = boto3.session.Session(aws_access_key_id=self._access_key_id,
-                                        aws_secret_access_key=self._secret_access_key)
+
+        session = boto3.Session(aws_access_key_id=self._access_key_id,
+                                aws_secret_access_key=self._secret_access_key,
+                                aws_session_token=self._session_token,
+                                )
         iam = session.client('iam')
+        # print(iam.list_users())
+        # return 0
         complete = False
         while not complete:
             resp = iam.generate_credential_report()
@@ -426,8 +481,9 @@ class UserReport:
         if user == '<root_account>':
             return []
         self.log.debug('Fetching Groups for user {}'.format(user))
-        session = boto3.session.Session(aws_access_key_id=self._access_key_id,
-                                        aws_secret_access_key=self._secret_access_key)
+        session = boto3.Session(aws_access_key_id=self._access_key_id,
+                                aws_secret_access_key=self._secret_access_key,
+                                aws_session_token=self._session_token,)
         iam = session.client('iam')
         complete = False
         marker = None
@@ -450,8 +506,9 @@ class UserReport:
         if user == '<root_account>':
             return []
         self.log.debug('Fetching Policies for user {}'.format(user))
-        session = boto3.session.Session(aws_access_key_id=self._access_key_id,
-                                        aws_secret_access_key=self._secret_access_key)
+        session = boto3.Session(aws_access_key_id=self._access_key_id,
+                                aws_secret_access_key=self._secret_access_key,
+                                aws_session_token=self._session_token,)
         iam = session.client('iam')
         complete = False
         marker = None

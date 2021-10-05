@@ -210,6 +210,8 @@ def report2html(name, report):
             <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;"><b>Last active</b></td>
             <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;"><b>Created</b></td>
             <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;"><b>Access Key(s)</b></td>
+            <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;"><b>Active Key rotated</b></td>
+            <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;"><b>MFA active</b></td>
             <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;"><b>Password</b></td>
             <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;"><b>Last changed</b></td>
             <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;"><b>Groups</b></td>
@@ -222,6 +224,8 @@ def report2html(name, report):
             <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;white-space:nowrap; text-align: {{ row.active_align }};">{{ row.active }}</td>
             <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;white-space:nowrap; text-align: right;">{{ row.created }}</td>
             <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;text-align: center;">{{ row.access_key }}</td>
+            <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;text-align: center;">{{ row.access_key_age }}</td>
+            <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;text-align: center;">{{ row.mfa_active }}</td>
             <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;text-align: center;">{{ row.password }}</td>
             <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;white-space:nowrap; text-align: {{ row.password_changed_align }};">{{ row.password_changed }}</td>
             <td style="padding-left: 3px; padding-right: 3px;border: 1px solid black;border-collapse: collapse;">{{ row.groups }}</td>
@@ -249,6 +253,9 @@ def report2html(name, report):
             'active_align': 'right',
             'created': '',
             'access_key': '',
+            'access_key_age': '',
+            'access_key_age_align': 'right',
+            'mfa_active': '',
             'password': '',
             'password_changed': '',
             'password_changed_align': 'right',
@@ -287,6 +294,11 @@ def report2html(name, report):
         r['created'] = days_ago(user['user_creation_time'])
 
         r['access_key'] = img['true'] if user['access_key_1_active'] or user['access_key_2_active'] else img['false']
+        if user['access_key_1_active'] or user['access_key_2_active']:
+            last_key_update = max(filter(None, [user['access_key_1_last_rotated'], user['access_key_2_last_rotated'],
+                                                ]))
+            r['access_key_age'] = days_ago(last_key_update)
+        r['mfa_active'] = img['true'] if user['mfa_active'] else img['false']
         r['password'] = img['true'] if user['password_enabled'] else img['false']
         r['last_service'] = last_service(user)
 
